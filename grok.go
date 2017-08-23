@@ -154,6 +154,7 @@ func handleSession(newChannel ssh.NewChannel, domain string) error {
 			req.Reply(req.Type == "shell", nil)
 		}
 	}(requests)
+	go sendKeepalives(channel, 90*time.Second)
 	fmt.Fprintf(channel, "tunnel address is https://%s\n", domain)
 	_, err = io.Copy(ioutil.Discard, channel)
 	if err == nil || err == io.EOF {
@@ -162,6 +163,16 @@ func handleSession(newChannel ssh.NewChannel, domain string) error {
 		channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 	}
 	return err
+}
+
+func sendKeepalives(channel ssh.Channel, d time.Duration) {
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
+	for range ticker.C {
+		if _, err := channel.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+			return
+		}
+	}
 }
 
 // timeoutConn extends deadline after successful read or write operations

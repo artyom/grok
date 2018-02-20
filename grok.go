@@ -61,6 +61,7 @@ func main() {
 		Timeout:      3 * time.Minute,
 		AddrSSH:      ":2022",
 		AddrTLS:      ":443",
+		AddrHTTP:     ":80",
 		Domain:       "example.com",
 		DirCache:     "/var/cache/grok",
 	}
@@ -77,6 +78,7 @@ type runArgs struct {
 	Timeout      time.Duration `flag:"timeout,IO timeout on client ssh connections"`
 	AddrSSH      string        `flag:"addr.ssh,ssh address to listen"`
 	AddrTLS      string        `flag:"addr.https,https address to listen"`
+	AddrHTTP     string        `flag:"addr.http,optional address to serve http-to-https redirects and ACME http-01 challenge responses"`
 	Domain       string        `flag:"domain,domain to use as a base if key lacks explicit domain"`
 	DirCache     string        `flag:"cache,certificates cache dir"`
 	Email        string        `flag:"email,email to use for letsencrypt API"`
@@ -123,6 +125,19 @@ func run(args runArgs) error {
 	}
 	go func() { errCh <- srv.ListenAndServeTLS("", "") }()
 	defer srv.Close()
+	if args.AddrHTTP != "" {
+		go func() {
+			errCh <- func() error {
+				srv := &http.Server{
+					Addr:         args.AddrHTTP,
+					Handler:      manager.HTTPHandler(nil),
+					ReadTimeout:  10 * time.Second,
+					WriteTimeout: 10 * time.Second,
+				}
+				return srv.ListenAndServe()
+			}()
+		}()
+	}
 	go func() {
 		errCh <- func() error {
 			for {

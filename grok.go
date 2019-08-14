@@ -90,11 +90,11 @@ func run(args runArgs) error {
 	}
 	auth, err := authChecker(args.AuthKeysFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("authorized keys load: %w", err)
 	}
 	hostKey, err := loadHostKey(args.HostKeyFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("host key load: %w", err)
 	}
 	config := &ssh.ServerConfig{
 		PublicKeyCallback: auth,
@@ -230,6 +230,9 @@ func authChecker(name string) (func(conn ssh.ConnMetadata, key ssh.PublicKey) (*
 	const prefix = "domain="
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
+		if len(sc.Bytes()) == 0 {
+			continue
+		}
 		pk, _, opts, _, err := ssh.ParseAuthorizedKey(sc.Bytes())
 		if err != nil {
 			return nil, err

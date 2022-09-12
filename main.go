@@ -40,7 +40,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -171,7 +170,7 @@ func handleSession(newChannel ssh.NewChannel, domain string) error {
 	}(requests)
 	go sendKeepalives(channel, 90*time.Second)
 	fmt.Fprintf(channel, "tunnel address is https://%s\n", domain)
-	_, err = io.Copy(ioutil.Discard, channel)
+	_, err = io.Copy(io.Discard, channel)
 	if err == nil || err == io.EOF {
 		// this makes ssh client exit with 0 status on client-initiated
 		// disconnect (eg. ^D)
@@ -213,7 +212,7 @@ func (c timeoutConn) Write(b []byte) (int, error) {
 }
 
 func loadHostKey(name string) (ssh.Signer, error) {
-	privateBytes, err := ioutil.ReadFile(name)
+	privateBytes, err := os.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}

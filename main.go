@@ -1,36 +1,56 @@
-// Command grok provides standalone server terminating https and proxying
-// requests in plain http over reverse ssh tunnels.
+// Command grok provides a standalone server that terminates HTTPS connections and proxies
+// requests as plain HTTP over reverse SSH tunnels.
 //
-// Its main use-case is the same as of the ngrok tool from <https://ngrok.com>.
+// Its main use-case is similar to the ngrok tool (https://ngrok.com), allowing developers
+// to expose local services through a public HTTPS endpoint.
 //
-// Command grok listens https and ssh endpoints. On ssh connections it's looking
-// for "tcpip-forward" request (RFC 4254, Section 7.1), once received, it
-// establishes reverse proxy for domain derived from public key of the client.
+// The server operates by listening on two endpoints:
 //
-// When receiving request over https, grok inspects request domain name, if
-// matching active tunnel is found, request is proxied over found tunnel as
-// plain HTTP/1.1 request. Certificates for matched domains are automatically
-// obtained from https://letsencrypt.org authority as required.
+//   - HTTPS: For incoming web requests
+//   - SSH: For tunnel establishment
 //
-// Domains are either derived from public key md5 fingerprint: hash.base.tld
-// (where base.tld domain is set with -domain flag) or defined per-key in
-// authorized_keys file as key option specification in form of domain=name.tld:
+// When receiving SSH connections, grok looks for "tcpip-forward" requests ([RFC 4254, Section 7.1]).
+// Once received, it establishes a reverse proxy for a domain that is either
+// derived from the client's public key fingerprint (hash.base.tld), or
+// explicitly defined in the authorized_keys file.
+//
+// For HTTPS requests, grok matches the request's domain name against active tunnels.
+// If a match is found, the request is proxied over the tunnel as a plain HTTP/1.1 request.
+// TLS certificates for matched domains are automatically obtained from [Let's Encrypt]
+// as needed.
+//
+// # Domain Configuration
+//
+// There are two ways to configure domains:
+//
+// Explicit domain per key in authorized_keys:
 //
 //	domain=dev1.example.com ssh-ed25519 key1...
 //	domain=dev2.example.com ssh-rsa key2...
 //
-// Once set, developer may then connect to this service with ssh client setting
-// up reverse port forwarding (i.e. to localhost:8080):
+// Auto-derived domain from key hash:
 //
-//	ssh -N -R 8080:localhost:8080 server.example.com
+//	ssh-ed25519 key3...  # Results in <hash>.example.com
 //
-// Note the notation for -R used by ssh:
+// where <hash> is derived from the key's fingerprint and domain
+// is set via the -domain flag
+//
+// # Usage Example
+//
+// To expose a local development server running on port 8080:
+//
+//	ssh -N -R 8080:localhost:8080 <SERVER>
+//
+// Note on SSH -R syntax:
 //
 //	-R [bind_address:]port:host:hostport
 //
-// When connecting to grok only host:hostport pair is significant, since they
-// specify where ssh client will connect on forwarded connection, the first port
-// can be set to arbitrary value and is ignored by the server.
+// The bind_address and first port are ignored by grok; only the host:hostport
+// pair is used to determine where the SSH client will connect for forwarded
+// connections.
+//
+// [Let's Encrypt]: https://letsencrypt.org
+// [RFC 4254, Section 7.1]: https://www.rfc-editor.org/rfc/rfc4254#section-7.1
 package main
 
 import (

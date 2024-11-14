@@ -38,8 +38,11 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/tls"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -48,9 +51,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/artyom/autoflags"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
@@ -64,28 +67,37 @@ func main() {
 		Domain:       "example.com",
 		DirCache:     "/var/cache/grok",
 	}
-	autoflags.Parse(&args)
+	flag.StringVar(&args.AuthKeysFile, "auth", args.AuthKeysFile, "`path` to authorized_keys file")
+	flag.StringVar(&args.HostKeyFile, "hostKey", args.HostKeyFile, "`path` to private host key file")
+	flag.DurationVar(&args.Timeout, "timeout", args.Timeout, "IO timeout on client ssh connections")
+	flag.StringVar(&args.AddrSSH, "addr.ssh", args.AddrSSH, "ssh address to listen")
+	flag.StringVar(&args.AddrTLS, "addr.https", args.AddrTLS, "https address to listen")
+	flag.StringVar(&args.AddrHTTP, "addr.http", args.AddrHTTP, "optional address to serve http-to-https redirects and ACME http-01 challenge responses")
+	flag.StringVar(&args.Domain, "domain", args.Domain, "domain to use as the base if the key lacks explicit domain")
+	flag.StringVar(&args.DirCache, "cache", args.DirCache, "certificates cache directory `path`")
+	flag.StringVar(&args.Email, "email", args.Email, "email to use for Letsencrypt API")
+	flag.Parse()
+	log.SetFlags(0)
 	if err := run(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 }
 
 type runArgs struct {
-	AuthKeysFile string        `flag:"auth,path to authorized_keys file"`
-	HostKeyFile  string        `flag:"hostKey,path to private host key file"`
-	Timeout      time.Duration `flag:"timeout,IO timeout on client ssh connections"`
-	AddrSSH      string        `flag:"addr.ssh,ssh address to listen"`
-	AddrTLS      string        `flag:"addr.https,https address to listen"`
-	AddrHTTP     string        `flag:"addr.http,optional address to serve http-to-https redirects and ACME http-01 challenge responses"`
-	Domain       string        `flag:"domain,domain to use as a base if key lacks explicit domain"`
-	DirCache     string        `flag:"cache,certificates cache dir"`
-	Email        string        `flag:"email,email to use for letsencrypt API"`
+	AuthKeysFile string
+	HostKeyFile  string
+	Timeout      time.Duration
+	AddrSSH      string
+	AddrTLS      string
+	AddrHTTP     string
+	Domain       string
+	DirCache     string
+	Email        string
 }
 
 func run(args runArgs) error {
 	if args.Domain == "" || args.Email == "" {
-		return fmt.Errorf("both domain and email should be set")
+		return errors.New("both domain and email should be set")
 	}
 	auth, err := authChecker(args.AuthKeysFile)
 	if err != nil {
@@ -106,7 +118,6 @@ func run(args runArgs) error {
 	}
 	defer ln.Close()
 	g := newGrok(args.Domain)
-	errCh := make(chan error, 2)
 	manager := autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Cache:      autocert.DirCache(args.DirCache),
@@ -122,39 +133,36 @@ func run(args runArgs) error {
 			GetCertificate: manager.GetCertificate,
 		},
 	}
-	go func() { errCh <- srv.ListenAndServeTLS("", "") }()
 	defer srv.Close()
+	var group errgroup.Group
+	group.Go(func() error { return srv.ListenAndServeTLS("", "") })
 	if args.AddrHTTP != "" {
-		go func() {
-			errCh <- func() error {
-				srv := &http.Server{
-					Addr:         args.AddrHTTP,
-					Handler:      manager.HTTPHandler(nil),
-					ReadTimeout:  10 * time.Second,
-					WriteTimeout: 10 * time.Second,
-				}
-				return srv.ListenAndServe()
-			}()
-		}()
-	}
-	go func() {
-		errCh <- func() error {
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					return err
-				}
-				tc := conn.(*net.TCPConn)
-				tc.SetKeepAlive(true)
-				tc.SetKeepAlivePeriod(3 * time.Minute)
-				if args.Timeout > 0 {
-					conn = timeoutConn{tc, args.Timeout}
-				}
-				go g.handleConn(conn, config)
+		group.Go(func() error {
+			srv := &http.Server{
+				Addr:         args.AddrHTTP,
+				Handler:      manager.HTTPHandler(nil),
+				ReadTimeout:  10 * time.Second,
+				WriteTimeout: 10 * time.Second,
 			}
-		}()
-	}()
-	return <-errCh
+			return srv.ListenAndServe()
+		})
+	}
+	group.Go(func() error {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			tc := conn.(*net.TCPConn)
+			tc.SetKeepAlive(true)
+			tc.SetKeepAlivePeriod(3 * time.Minute)
+			if args.Timeout > 0 {
+				conn = timeoutConn{tc, args.Timeout}
+			}
+			go g.handleConn(conn, config)
+		}
+	})
+	return group.Wait()
 }
 
 func handleSession(newChannel ssh.NewChannel, domain string) error {
@@ -260,7 +268,7 @@ func authChecker(name string) (func(conn ssh.ConnMetadata, key ssh.PublicKey) (*
 		if perms, ok := pkeys[fp]; ok {
 			return perms, nil
 		}
-		return nil, fmt.Errorf("no keys matched")
+		return nil, errors.New("no keys matched")
 	}, nil
 }
 
@@ -337,7 +345,7 @@ func (g *grok) handleConn(nConn net.Conn, config *ssh.ServerConfig) error {
 
 func (g *grok) domain(p *ssh.Permissions) (string, error) {
 	if p == nil {
-		return "", fmt.Errorf("nil *ssh.Permissions")
+		return "", errors.New("nil *ssh.Permissions")
 	}
 	if p.Extensions != nil {
 		if domain, ok := p.Extensions["domain"]; ok {
@@ -349,7 +357,7 @@ func (g *grok) domain(p *ssh.Permissions) (string, error) {
 			return fp + "." + g.defaultDomain, nil
 		}
 	}
-	return "", fmt.Errorf("failed to derive domain from the key")
+	return "", errors.New("failed to derive domain from the key")
 }
 
 func (g *grok) setProxy(domain string, proxy *httputil.ReverseProxy) bool {
@@ -392,7 +400,7 @@ func (g *grok) HostPolicy(ctx context.Context, host string) error {
 	if _, ok := g.proxies[host]; ok {
 		return nil
 	}
-	return fmt.Errorf("host not configured")
+	return errors.New("host not configured")
 }
 
 // netAddr is a stub implementation of net.Addr
@@ -409,9 +417,9 @@ type connWrap struct {
 
 func (c *connWrap) LocalAddr() net.Addr                { return netAddr("localhost") }
 func (c *connWrap) RemoteAddr() net.Addr               { return c.rAddr }
-func (c *connWrap) SetDeadline(t time.Time) error      { return fmt.Errorf("not implemented") }
-func (c *connWrap) SetReadDeadline(t time.Time) error  { return fmt.Errorf("not implemented") }
-func (c *connWrap) SetWriteDeadline(t time.Time) error { return fmt.Errorf("not implemented") }
+func (c *connWrap) SetDeadline(t time.Time) error      { return errors.ErrUnsupported }
+func (c *connWrap) SetReadDeadline(t time.Time) error  { return errors.ErrUnsupported }
+func (c *connWrap) SetWriteDeadline(t time.Time) error { return errors.ErrUnsupported }
 
 func newReverseProxy(sconn ssh.Conn, domain, addr string, port uint32) *httputil.ReverseProxy {
 	dialFunc := func(network, address string) (net.Conn, error) {

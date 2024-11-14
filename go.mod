@@ -1,8 +1,8 @@
 module github.com/artyom/grok
 
 require (
-	github.com/artyom/autoflags v1.1.1
 	golang.org/x/crypto v0.29.0
+	golang.org/x/sync v0.9.0
 )
 
 require (
